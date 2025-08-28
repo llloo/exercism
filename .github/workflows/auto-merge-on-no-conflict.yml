@@ -9,6 +9,12 @@ jobs:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
+      # Step 0: 必须先检出代码，创建git仓库环境
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 获取所有历史记录和分支，这对某些git操作很重要
+
       # Step 1: 使用 GitHub CLI 和 API 检查 PR 是否可合并
       - name: Check mergeability
         id: check-mergeable
@@ -17,14 +23,14 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           # 获取PR的详细JSON信息，其中包含mergeable状态
-          pr_info=$(gh pr view $PR_NUMBER --json mergeable)
+          pr_info=$(gh pr view $PR_NUMBER --json mergeable,headRefName,baseRefName)
           mergeable_status=$(echo $pr_info | jq -r '.mergeable')
           
           # 等待GitHub完成冲突检测（有时状态为null）
           counter=0
-          while [[ "$mergeable_status" == "null" && $counter -lt 10 ]]; do
-            echo "Waiting for mergeable status to be calculated... ($counter/10)"
-            sleep 3
+          while [[ "$mergeable_status" == "null" && $counter -lt 12 ]]; do
+            echo "Waiting for mergeable status to be calculated... ($counter/12)"
+            sleep 5
             pr_info=$(gh pr view $PR_NUMBER --json mergeable)
             mergeable_status=$(echo $pr_info | jq -r '.mergeable')
             ((counter++))
@@ -40,6 +46,11 @@ jobs:
           GH_TOKEN: ${{ secrets.AUTO_MERGE_TOKEN }} # 需要repo权限的PAT
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          # 设置git用户信息（避免git命令警告）
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 执行合并操作
           gh pr merge $PR_NUMBER --squash --delete-branch
 
       # Step 3: 如果存在冲突，则添加评论
@@ -54,4 +65,18 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: '⚠️ This PR has merge conflicts. Please resolve them before it can be merged.'
+            })
+
+      # (可选) Step 4: 处理未知状态
+      - name: Comment if status unknown
+        if: steps.check-mergeable.outputs.mergeable != 'MERGEABLE' && steps.check-mergeable.outputs.mergeable != 'CONFLICTING'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '⏳ GitHub is still calculating merge status. The auto-merge bot will check again when new commits are pushed.'
             })
