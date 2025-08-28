@@ -9,26 +9,42 @@ jobs:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      # Step 1: 检查 PR 是否存在合并冲突
-      - name: Check for merge conflicts
-        id: conflict-check
-        uses: epslow/check-pr-mergeability@v1
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          pr-number: ${{ github.event.pull_request.number }}
+      # Step 1: 使用 GitHub CLI 和 API 检查 PR 是否可合并
+      - name: Check mergeability
+        id: check-mergeable
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # 获取PR的详细JSON信息，其中包含mergeable状态
+          pr_info=$(gh pr view $PR_NUMBER --json mergeable)
+          mergeable_status=$(echo $pr_info | jq -r '.mergeable')
+          
+          # 等待GitHub完成冲突检测（有时状态为null）
+          counter=0
+          while [[ "$mergeable_status" == "null" && $counter -lt 10 ]]; do
+            echo "Waiting for mergeable status to be calculated... ($counter/10)"
+            sleep 3
+            pr_info=$(gh pr view $PR_NUMBER --json mergeable)
+            mergeable_status=$(echo $pr_info | jq -r '.mergeable')
+            ((counter++))
+          done
+          
+          echo "Mergeable status: $mergeable_status"
+          echo "mergeable=$mergeable_status" >> $GITHUB_OUTPUT
 
       # Step 2: 自动合并并删除分支
       - name: Merge PR and delete source branch
-        if: steps.conflict-check.outputs.mergeable == 'true'
+        if: steps.check-mergeable.outputs.mergeable == 'MERGEABLE'
         env:
-          GH_TOKEN: ${{ secrets.AUTO_MERGE_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTO_MERGE_TOKEN }} # 需要repo权限的PAT
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           gh pr merge $PR_NUMBER --squash --delete-branch
 
-      # (可选) Step 3: 如果存在冲突，则添加评论
+      # Step 3: 如果存在冲突，则添加评论
       - name: Comment if conflict exists
-        if: steps.conflict-check.outputs.mergeable == 'false'
+        if: steps.check-mergeable.outputs.mergeable == 'CONFLICTING'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
