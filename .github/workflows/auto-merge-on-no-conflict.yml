@@ -1,0 +1,41 @@
+name: Auto Merge and Delete Branch on No Conflict
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+jobs:
+  check-and-merge:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      # Step 1: 检查 PR 是否存在合并冲突
+      - name: Check for merge conflicts
+        id: conflict-check
+        uses: epslow/check-pr-mergeability@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pr-number: ${{ github.event.pull_request.number }}
+
+      # Step 2: 自动合并并删除分支
+      - name: Merge PR and delete source branch
+        if: steps.conflict-check.outputs.mergeable == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AUTO_MERGE_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr merge $PR_NUMBER --squash --delete-branch
+
+      # (可选) Step 3: 如果存在冲突，则添加评论
+      - name: Comment if conflict exists
+        if: steps.conflict-check.outputs.mergeable == 'false'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '⚠️ This PR has merge conflicts. Please resolve them before it can be merged.'
+            })
